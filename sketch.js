@@ -21,15 +21,26 @@ const settings = {
   personFillAlpha: 1.0,
   personBorderColor: '#6c6c6cff',
   personBorderWeight: 2,
-  personBorderBlur: 16 // haziness for the border (0 = crisp)
+  personBorderBlur: 16, // haziness for the border (0 = crisp)
+  // Video capture / placement (for preserving aspect ratio)
+  videoCaptureWidth: 320,
+  videoCaptureHeight: 240,
+  videoFit: 'contain', // 'contain' | 'cover' | 'stretch'
+  videoScale: 1.0,
+  videoOffsetX: 0,
+  videoOffsetY: 0,
+  videoMirror: true,
 };
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
   pixelDensity(1);
 
+  // video = createCapture({ video: { width: 1280, height: 720 } });
+  // video = createCapture(VIDEO);
+  // video.size(320, 240);
   video = createCapture(VIDEO);
-  video.size(320, 240);
+video.size(1280, 720);
   video.hide();
 
   archive = createGraphics(width, height);
@@ -37,6 +48,66 @@ function setup() {
 
   // Use 'body-pix' or 'selfie-segmentation' - both work under bodySegmentation
   bodySegmentation = ml5.bodySegmentation(video, { maskType: "background" }, modelReady);
+}
+
+// Compute where to draw the video on the canvas while preserving aspect ratio
+function computeVideoPlacement() {
+  // intrinsic video size (prefer actual camera dimensions when available)
+  let vw = settings.videoCaptureWidth;
+  let vh = settings.videoCaptureHeight;
+  if (video && video.elt) {
+    const iw = video.elt.videoWidth || video.elt.width || 0;
+    const ih = video.elt.videoHeight || video.elt.height || 0;
+    if (iw > 0 && ih > 0) {
+      vw = iw;
+      vh = ih;
+    }
+  }
+
+  const cw = width;
+  const ch = height;
+
+  if (settings.videoFit === 'stretch') {
+    const dw = cw * settings.videoScale;
+    const dh = ch * settings.videoScale;
+    const dx = (cw - dw) / 2 + settings.videoOffsetX;
+    const dy = (ch - dh) / 2 + settings.videoOffsetY;
+    return { dx, dy, dw, dh };
+  }
+
+  const scaleContain = Math.min(cw / vw, ch / vh);
+  const scaleCover = Math.max(cw / vw, ch / vh);
+  const baseScale = settings.videoFit === 'cover' ? scaleCover : scaleContain;
+
+  const dw = vw * baseScale * settings.videoScale;
+  const dh = vh * baseScale * settings.videoScale;
+  const dx = (cw - dw) / 2 + settings.videoOffsetX;
+  const dy = (ch - dh) / 2 + settings.videoOffsetY;
+  return { dx, dy, dw, dh };
+}
+
+function keyPressed() {
+  // Nudge offsets
+  const step = keyIsDown(SHIFT) ? 10 : 2;
+  if (key === 'ArrowLeft') settings.videoOffsetX -= step;
+  if (key === 'ArrowRight') settings.videoOffsetX += step;
+  if (key === 'ArrowUp') settings.videoOffsetY -= step;
+  if (key === 'ArrowDown') settings.videoOffsetY += step;
+
+  // Zoom +/- keys
+  if (key === '=') settings.videoScale *= 1.02; // plus
+  if (key === '-') settings.videoScale /= 1.02; // minus
+
+  // Toggles
+  if (key.toLowerCase() === 'm') settings.videoMirror = !settings.videoMirror;
+  if (key.toLowerCase() === 'c') settings.showCamera = !settings.showCamera;
+
+  // Print debug
+  if (key.toLowerCase() === 'd') {
+    const vp = computeVideoPlacement();
+    console.log('videoScale', settings.videoScale, 'offsetX', settings.videoOffsetX, 'offsetY', settings.videoOffsetY);
+    console.log('vp', vp, 'intrinsic', video && video.elt ? { w: video.elt.videoWidth, h: video.elt.videoHeight } : null);
+  }
 }
 
 function modelReady() {
@@ -60,7 +131,9 @@ function gotResults(result) {
       if (!stillStart) stillStart = millis();
 
       if (millis() - stillStart > STILL_TIME) {
-        stampOutline(mask);
+        // pass the mask image dimensions through so stamping uses the mask's actual size
+        // result.mask was the image used to build `mask` earlier; we can use maskImg.width/height
+        stampOutline(mask, maskImg.width, maskImg.height);
         stillStart = null;
       }
     } else {
@@ -97,10 +170,10 @@ function maskDiff(a, b) {
   return d / (a.length / 2);
 }
 
-function stampOutline(mask) {
-  console.log("STAMPING NOW!");
-  let w = 320;
-  let h = 240;
+function stampOutline(mask, w, h) {
+  console.log(`STAMPING NOW! (stamp size: ${w} x ${h})`);
+  // w and h are the actual mask/image dimensions provided by the segmentation result
+  // they replace previously hardcoded or settings-based sizes so stamping scales correctly
 
   // Create an image representing the silhouette fill and the outline separately
   let silhouette = createImage(w, h);
@@ -139,13 +212,8 @@ function stampOutline(mask) {
   silhouette.updatePixels();
   outline.updatePixels();
 
-  // Draw both to the archive with mirroring (so the view matches the live mirrored preview)
-  archive.push();
-  archive.translate(width, 0);
-  archive.scale(-1, 1);
-
-  // 1) Draw blurred outline using canvas shadow
-  // We'll draw the outline into the archive with stroke blur using the 2D context.
+  // Draw into the archive using the same placement rect as the video so stamps align correctly
+  const vp = computeVideoPlacement();
   archive.push();
   // Convert outline image to an offscreen canvas draw to leverage shadowBlur
   // We'll draw the outline image at full size, tint it to the border color, and apply shadow on the archive's drawingContext.
@@ -178,8 +246,17 @@ function stampOutline(mask) {
   }
   outlineGraphics.updatePixels();
 
-  // Draw the tinted outline into the archive, scaled to canvas size
-  archive.image(outlineGraphics, 0, 0, width, height);
+  // Draw the tinted outline into the archive, scaled to the video placement rect
+  if (settings.videoMirror) {
+    // draw mirrored into the video rect
+    archive.push();
+    archive.translate(vp.dx + vp.dw, vp.dy);
+    archive.scale(-1, 1);
+    archive.image(outlineGraphics, 0, 0, vp.dw, vp.dh);
+    archive.pop();
+  } else {
+    archive.image(outlineGraphics, vp.dx, vp.dy, vp.dw, vp.dh);
+  }
 
   ctx.restore();
   archive.pop();
@@ -204,8 +281,16 @@ function stampOutline(mask) {
   }
   fillGraphics.updatePixels();
 
-  // Draw fill into the archive (mirrored coordinate system still active)
-  archive.image(fillGraphics, 0, 0, width, height);
+  // Draw fill into the archive at the same video placement rect
+  if (settings.videoMirror) {
+    archive.push();
+    archive.translate(vp.dx + vp.dw, vp.dy);
+    archive.scale(-1, 1);
+    archive.image(fillGraphics, 0, 0, vp.dw, vp.dh);
+    archive.pop();
+  } else {
+    archive.image(fillGraphics, vp.dx, vp.dy, vp.dw, vp.dh);
+  }
   archive.pop();
 
   archive.pop();
@@ -221,12 +306,17 @@ function draw() {
 
   // Optionally draw the live video feed faintly (video capture still runs)
   if (settings.showCamera) {
+    const vp = computeVideoPlacement();
     push();
-    translate(width, 0);
-    scale(-1, 1);
-    // cameraOpacity expected 0..1
     tint(255, constrain(settings.cameraOpacity, 0, 1) * 255);
-    image(video, 0, 0, width, height);
+    if (settings.videoMirror) {
+      // mirror only the video rectangle so aspect ratio is preserved
+      translate(vp.dx + vp.dw, vp.dy);
+      scale(-1, 1);
+      image(video, 0, 0, vp.dw, vp.dh);
+    } else {
+      image(video, vp.dx, vp.dy, vp.dw, vp.dh);
+    }
     pop();
   }
 
@@ -235,12 +325,17 @@ function draw() {
 }
 
 function windowResized() {
+  // Preserve existing archive content across resize by copying previous buffer into new one
+  const oldArchiveImg = archive ? archive.get() : null;
   resizeCanvas(windowWidth, windowHeight);
   archive = createGraphics(width, height);
   archive.clear();
+  if (oldArchiveImg) {
+    archive.push();
+    archive.image(oldArchiveImg, 0, 0, archive.width, archive.height);
+    archive.pop();
+  }
   if (video) {
-    // Adjust the video size to the new canvas; keep original capture resolution to match segmentation
-    // but ensure our draw sizing matches
-    video.size(320, 240);
+    video.size(settings.videoCaptureWidth, settings.videoCaptureHeight);
   }
 }
