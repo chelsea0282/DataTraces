@@ -1,4 +1,4 @@
-let video;
+let video; 
 let bodySegmentation;
 let lastMask = null;
 let stillStart = null;
