@@ -4,8 +4,25 @@ let lastMask = null;
 let stillStart = null;
 let archive;
 
-const STILL_TIME = 5000; 
+const STILL_TIME = 5000; // 5 seconds of stillness before stamping
 const MOVE_THRESHOLD = 0.05; // Raised for stability
+
+// Top-level settings to make appearance configurable
+const settings = {
+  // backgroundColor: any CSS color string or null/'transparent' to keep canvas transparent
+  backgroundColor: 'transparent',
+
+  // camera: capture still runs but drawing can be toggled
+  showCamera: true,
+  cameraOpacity: 0.24,
+
+  // person / stamp appearance (used when stamping outlines)
+  personFillColor: '#6c6c6cff',
+  personFillAlpha: 1.0,
+  personBorderColor: '#6c6c6cff',
+  personBorderWeight: 2,
+  personBorderBlur: 16 // haziness for the border (0 = crisp)
+};
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -85,47 +102,145 @@ function stampOutline(mask) {
   let w = 320;
   let h = 240;
 
-  let img = createImage(w, h);
-  img.loadPixels();
+  // Create an image representing the silhouette fill and the outline separately
+  let silhouette = createImage(w, h);
+  let outline = createImage(w, h);
+  silhouette.loadPixels();
+  outline.loadPixels();
 
+  // Build silhouette and outline (white pixels)
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       let i = x + y * w;
+      let px = 4 * i;
 
       if (mask[i] === 1) {
-        // Look for boundaries between 1 (person) and 0 (background)
+        // mark silhouette pixel (fully opaque)
+        silhouette.pixels[px] = 255;
+        silhouette.pixels[px + 1] = 255;
+        silhouette.pixels[px + 2] = 255;
+        silhouette.pixels[px + 3] = 255;
+
+        // outline: check neighbors to see if boundary
         if (mask[i - 1] === 0 || mask[i + 1] === 0 || mask[i - w] === 0 || mask[i + w] === 0) {
-          let px = 4 * i;
-          img.pixels[px] = 255;
-          img.pixels[px + 1] = 255;
-          img.pixels[px + 2] = 255;
-          img.pixels[px + 3] = 255; 
+          outline.pixels[px] = 255;
+          outline.pixels[px + 1] = 255;
+          outline.pixels[px + 2] = 255;
+          outline.pixels[px + 3] = 255;
         }
+      } else {
+        // background: transparent
+        silhouette.pixels[px + 3] = 0;
+        outline.pixels[px + 3] = 0;
       }
     }
   }
 
-  img.updatePixels();
-  
-  // Flip the image manually before drawing to archive to match mirrored view
+  silhouette.updatePixels();
+  outline.updatePixels();
+
+  // Draw both to the archive with mirroring (so the view matches the live mirrored preview)
   archive.push();
   archive.translate(width, 0);
   archive.scale(-1, 1);
-  archive.image(img, 0, 0, width, height);
+
+  // 1) Draw blurred outline using canvas shadow
+  // We'll draw the outline into the archive with stroke blur using the 2D context.
+  archive.push();
+  // Convert outline image to an offscreen canvas draw to leverage shadowBlur
+  // We'll draw the outline image at full size, tint it to the border color, and apply shadow on the archive's drawingContext.
+  archive.imageMode(CORNER);
+
+  // Prepare 2D context
+  let ctx = archive.drawingContext;
+  ctx.save();
+
+  // Set shadow (haziness) for the border
+  ctx.shadowBlur = settings.personBorderBlur;
+  ctx.shadowColor = settings.personBorderColor;
+
+  // Draw outline image tinted to border color
+  // To tint, we'll draw the outline image to an offscreen p5.Graphics then color it.
+  let outlineGraphics = createGraphics(w, h);
+  outlineGraphics.clear();
+  outlineGraphics.image(outline, 0, 0, w, h);
+  outlineGraphics.loadPixels();
+  // Replace white pixels with desired border color (keeping alpha)
+  let bc = color(settings.personBorderColor);
+  let br = red(bc), bg = green(bc), bb = blue(bc);
+  for (let i = 0; i < outlineGraphics.pixels.length; i += 4) {
+    if (outlineGraphics.pixels[i + 3] > 0) {
+      outlineGraphics.pixels[i] = br;
+      outlineGraphics.pixels[i + 1] = bg;
+      outlineGraphics.pixels[i + 2] = bb;
+      outlineGraphics.pixels[i + 3] = 255;
+    }
+  }
+  outlineGraphics.updatePixels();
+
+  // Draw the tinted outline into the archive, scaled to canvas size
+  archive.image(outlineGraphics, 0, 0, width, height);
+
+  ctx.restore();
+  archive.pop();
+
+  // 2) Draw silhouette fill with specified color and alpha
+  archive.push();
+  // Use createGraphics to color the silhouette as fill
+  let fillGraphics = createGraphics(w, h);
+  fillGraphics.clear();
+  fillGraphics.image(silhouette, 0, 0, w, h);
+  fillGraphics.loadPixels();
+  let fc = color(settings.personFillColor);
+  let fr = red(fc), fg = green(fc), fb = blue(fc);
+  let alpha255 = constrain(settings.personFillAlpha, 0, 1) * 255;
+  for (let i = 0; i < fillGraphics.pixels.length; i += 4) {
+    if (fillGraphics.pixels[i + 3] > 0) {
+      fillGraphics.pixels[i] = fr;
+      fillGraphics.pixels[i + 1] = fg;
+      fillGraphics.pixels[i + 2] = fb;
+      fillGraphics.pixels[i + 3] = alpha255;
+    }
+  }
+  fillGraphics.updatePixels();
+
+  // Draw fill into the archive (mirrored coordinate system still active)
+  archive.image(fillGraphics, 0, 0, width, height);
+  archive.pop();
+
   archive.pop();
 }
 
 function draw() {
-  background(0);
-  
-  // Faint live video preview
-  push();
-  translate(width, 0);
-  scale(-1, 1);
-  tint(255, 60); 
-  image(video, 0, 0, width, height);
-  pop();
+  // Background handling: preserve transparency if settings.backgroundColor is null or 'transparent'
+  if (settings.backgroundColor === null || settings.backgroundColor === 'transparent') {
+    clear();
+  } else {
+    background(settings.backgroundColor);
+  }
 
-  // Show the archive
+  // Optionally draw the live video feed faintly (video capture still runs)
+  if (settings.showCamera) {
+    push();
+    translate(width, 0);
+    scale(-1, 1);
+    // cameraOpacity expected 0..1
+    tint(255, constrain(settings.cameraOpacity, 0, 1) * 255);
+    image(video, 0, 0, width, height);
+    pop();
+  }
+
+  // Show the archive (stamped outlines)
   image(archive, 0, 0);
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  archive = createGraphics(width, height);
+  archive.clear();
+  if (video) {
+    // Adjust the video size to the new canvas; keep original capture resolution to match segmentation
+    // but ensure our draw sizing matches
+    video.size(320, 240);
+  }
 }
