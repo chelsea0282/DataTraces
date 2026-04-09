@@ -4,7 +4,7 @@ let lastMask = null;
 let stillStart = null;
 let archive;
 
-const STILL_TIME = 5000; // 5 seconds of stillness before stamping
+const STILL_TIME = 10000; // 5 seconds of stillness before stamping
 const MOVE_THRESHOLD = 0.05; // Raised for stability
 
 // Top-level settings to make appearance configurable
