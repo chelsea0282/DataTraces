@@ -8,7 +8,7 @@ let questions = ["Your data is collected 5000 times a day",
   "",
   "",
 ]; 
-const STILL_TIME = 5000; // 5 seconds of stillness before stamping
+const STILL_TIME = 1000; // 5 seconds of stillness before stamping
 const MOVE_THRESHOLD = 0.05; // Raised for stability
 
 // Top-level settings to make appearance configurable
@@ -22,12 +22,12 @@ const settings = {
 
   // person / stamp appearance (used when stamping outlines)
   // lighter defaults so stamped silhouettes read as shadows rather than solid black
-  personFillColor: '#6c6c6c88',
+  personFillColor: '#95939388',
   personFillAlpha: 0.9,
   // border is a soft, light grey with slight transparency
-  personBorderColor: '#6c6c6c88',
+  personBorderColor: '#95939388',
   personBorderWeight: 2,
-  personBorderBlur: 5, // soft 5px blur for shadow-like edge
+  personBorderBlur: 8, // soft blur for shadow-like edge (base value; scaled at draw time)
   // Video capture / placement (for preserving aspect ratio)
   videoCaptureWidth: 1280,
   videoCaptureHeight: 720,
@@ -487,8 +487,16 @@ function draw() {
     const shadowColor = shadowColorString(settings.personBorderColor);
     ctx.save();
     ctx.globalAlpha = a;
-    ctx.shadowBlur = settings.personBorderBlur;
-    ctx.shadowColor = shadowColor;
+  // Scale the blur according to how the stamp image is being scaled on screen so
+  // the perceived blur matches the displayed size (outlineGraphics is created
+  // at mask resolution then drawn scaled to vp.dw/vp.dh).
+  const outW = s.outline.width || (s.outline.canvas && s.outline.canvas.width) || s.vp.dw;
+  const outH = s.outline.height || (s.outline.canvas && s.outline.canvas.height) || s.vp.dh;
+  const scaleX = s.vp.dw / outW;
+  const scaleY = s.vp.dh / outH;
+  const scaledBlur = Math.max(scaleX, scaleY) * settings.personBorderBlur;
+  ctx.shadowBlur = scaledBlur;
+  ctx.shadowColor = shadowColor;
     if (settings.videoMirror) {
       ctx.translate(s.vp.dx + s.vp.dw, s.vp.dy);
       ctx.scale(-1, 1);
@@ -509,15 +517,21 @@ function draw() {
         aCtx.translate(s.vp.dx + s.vp.dw, s.vp.dy);
         aCtx.scale(-1, 1);
         aCtx.drawImage(s.fill.canvas, 0, 0, s.vp.dw, s.vp.dh);
-        // outline with shadow
-        aCtx.shadowBlur = settings.personBorderBlur;
-        aCtx.shadowColor = shadowColor;
+  // outline with shadow (scaled to the archive draw size)
+  const aOutW = s.outline.width || (s.outline.canvas && s.outline.canvas.width) || s.vp.dw;
+  const aOutH = s.outline.height || (s.outline.canvas && s.outline.canvas.height) || s.vp.dh;
+  const aScaleX = s.vp.dw / aOutW;
+  const aScaleY = s.vp.dh / aOutH;
+  aCtx.shadowBlur = Math.max(aScaleX, aScaleY) * settings.personBorderBlur;
+  aCtx.shadowColor = shadowColor;
         aCtx.drawImage(s.outline.canvas, 0, 0, s.vp.dw, s.vp.dh);
       } else {
         aCtx.drawImage(s.fill.canvas, s.vp.dx, s.vp.dy, s.vp.dw, s.vp.dh);
-        // outline with shadow
-        aCtx.shadowBlur = settings.personBorderBlur;
-        aCtx.shadowColor = shadowColor;
+  // outline with shadow (scaled to the archive draw size)
+  const bOutW = s.outline.width || (s.outline.canvas && s.outline.canvas.width) || s.vp.dw;
+  const bOutH = s.outline.height || (s.outline.canvas && s.outline.canvas.height) || s.vp.dh;
+  aCtx.shadowBlur = Math.max(bOutW ? (s.vp.dw / bOutW) : 1, bOutH ? (s.vp.dh / bOutH) : 1) * settings.personBorderBlur;
+  aCtx.shadowColor = shadowColor;
         aCtx.drawImage(s.outline.canvas, s.vp.dx, s.vp.dy, s.vp.dw, s.vp.dh);
       }
       aCtx.restore();
