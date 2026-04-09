@@ -2,9 +2,13 @@ let video;
 let bodySegmentation;
 let lastMask = null;
 let stillStart = null;
+let stamps = []; // pending stamps that are fading in
 let archive;
-
-const STILL_TIME = 10000; // 5 seconds of stillness before stamping
+let questions = ["Your data is collected 5000 times a day",
+  "",
+  "",
+]; 
+const STILL_TIME = 5000; // 5 seconds of stillness before stamping
 const MOVE_THRESHOLD = 0.05; // Raised for stability
 
 // Top-level settings to make appearance configurable
@@ -17,11 +21,13 @@ const settings = {
   cameraOpacity: 0.24,
 
   // person / stamp appearance (used when stamping outlines)
-  personFillColor: '#000000ff',
-  personFillAlpha: 1.0,
-  personBorderColor: '#000000ff',
+  // lighter defaults so stamped silhouettes read as shadows rather than solid black
+  personFillColor: '#6c6c6c88',
+  personFillAlpha: 0.9,
+  // border is a soft, light grey with slight transparency
+  personBorderColor: '#6c6c6c88',
   personBorderWeight: 2,
-  personBorderBlur: 16, // haziness for the border (0 = crisp)
+  personBorderBlur: 5, // soft 5px blur for shadow-like edge
   // Video capture / placement (for preserving aspect ratio)
   videoCaptureWidth: 1280,
   videoCaptureHeight: 720,
@@ -32,6 +38,11 @@ const settings = {
   videoOffsetX: 0,
   videoOffsetY: 0,
   videoMirror: false,
+  // how long (ms) the stamp fades in after being created
+  stampFadeDuration: 5000,
+  // morphological opening to remove thin attachments (shadows)
+  morphologyEnabled: true,
+  morphologyIterations: 1,
 };
 
 function setup() {
@@ -172,10 +183,73 @@ function maskDiff(a, b) {
   return d / (a.length / 2);
 }
 
+// Keep only the most likely person connected component in the binary mask.
+// Strategy: find connected components (4-connected), compute each component's
+// top-most y (minY) and area, then choose the component with the smallest minY
+// (closest to the top of the image) as the person. Returns a new Int8Array mask.
+function filterPersonComponent(mask, w, h) {
+  const labels = new Int32Array(w * h);
+  let label = 1;
+  const comps = [];
+
+  const stack = [];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = x + y * w;
+      if (mask[i] !== 1 || labels[i] !== 0) continue;
+      // flood fill
+      let area = 0;
+      let minY = y;
+      stack.push(i);
+      labels[i] = label;
+      while (stack.length) {
+        const idx = stack.pop();
+        area++;
+        const cx = idx % w;
+        const cy = Math.floor(idx / w);
+        if (cy < minY) minY = cy;
+
+        // 4-neighbors
+        const n1 = idx - 1;
+        if (cx > 0 && labels[n1] === 0 && mask[n1] === 1) { labels[n1] = label; stack.push(n1); }
+        const n2 = idx + 1;
+        if (cx < w - 1 && labels[n2] === 0 && mask[n2] === 1) { labels[n2] = label; stack.push(n2); }
+        const n3 = idx - w;
+        if (cy > 0 && labels[n3] === 0 && mask[n3] === 1) { labels[n3] = label; stack.push(n3); }
+        const n4 = idx + w;
+        if (cy < h - 1 && labels[n4] === 0 && mask[n4] === 1) { labels[n4] = label; stack.push(n4); }
+      }
+
+      comps.push({ label, area, minY });
+      label++;
+    }
+  }
+
+  if (comps.length === 0) return mask;
+
+  // choose component with smallest minY; tie-breaker: larger area
+  comps.sort((a, b) => (a.minY - b.minY) || (b.area - a.area));
+  const chosen = comps[0].label;
+
+  const out = new Int8Array(w * h);
+  for (let i = 0; i < labels.length; i++) {
+    if (labels[i] === chosen) out[i] = 1;
+  }
+  return out;
+}
+
 function stampOutline(mask, w, h) {
   console.log(`STAMPING NOW! (stamp size: ${w} x ${h})`);
   // w and h are the actual mask/image dimensions provided by the segmentation result
   // they replace previously hardcoded or settings-based sizes so stamping scales correctly
+  // Optionally apply a morphological opening (erode then dilate) to remove thin attachments
+  // like shadows that are connected to the main component by a narrow bridge.
+  if (settings.morphologyEnabled) {
+    mask = morphOpen(mask, w, h, settings.morphologyIterations);
+  }
+
+  // filter to keep only the most likely person connected component (removes distant blobs)
+  mask = filterPersonComponent(mask, w, h);
 
   // Create an image representing the silhouette fill and the outline separately
   let silhouette = createImage(w, h);
@@ -247,25 +321,7 @@ function stampOutline(mask, w, h) {
     }
   }
   outlineGraphics.updatePixels();
-
-  // Draw the tinted outline into the archive, scaled to the video placement rect
-  if (settings.videoMirror) {
-    // draw mirrored into the video rect
-    archive.push();
-    archive.translate(vp.dx + vp.dw, vp.dy);
-    archive.scale(-1, 1);
-    archive.image(outlineGraphics, 0, 0, vp.dw, vp.dh);
-    archive.pop();
-  } else {
-    archive.image(outlineGraphics, vp.dx, vp.dy, vp.dw, vp.dh);
-  }
-
-  ctx.restore();
-  archive.pop();
-
-  // 2) Draw silhouette fill with specified color and alpha
-  archive.push();
-  // Use createGraphics to color the silhouette as fill
+  // Prepare filled silhouette graphics
   let fillGraphics = createGraphics(w, h);
   fillGraphics.clear();
   fillGraphics.image(silhouette, 0, 0, w, h);
@@ -283,19 +339,86 @@ function stampOutline(mask, w, h) {
   }
   fillGraphics.updatePixels();
 
-  // Draw fill into the archive at the same video placement rect
-  if (settings.videoMirror) {
-    archive.push();
-    archive.translate(vp.dx + vp.dw, vp.dy);
-    archive.scale(-1, 1);
-    archive.image(fillGraphics, 0, 0, vp.dw, vp.dh);
-    archive.pop();
-  } else {
-    archive.image(fillGraphics, vp.dx, vp.dy, vp.dw, vp.dh);
-  }
+  // Instead of drawing immediately, push a stamp object that will fade in over time
+  const stamp = {
+    outline: outlineGraphics,
+    fill: fillGraphics,
+    created: millis(),
+    fadeDuration: settings.stampFadeDuration,
+    vp: vp,
+    mirrored: settings.videoMirror
+  };
+  stamps.push(stamp);
   archive.pop();
+}
 
-  archive.pop();
+// Morphological operations on binary masks (Int8Array of 0/1)
+function morphOpen(mask, w, h, iterations) {
+  let out = mask;
+  for (let i = 0; i < (iterations || 1); i++) {
+    out = erodeMask(out, w, h);
+  }
+  for (let i = 0; i < (iterations || 1); i++) {
+    out = dilateMask(out, w, h);
+  }
+  return out;
+}
+
+function erodeMask(mask, w, h) {
+  const out = new Int8Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      let i = x + y * w;
+      if (mask[i] !== 1) continue;
+      // require full 3x3 neighborhood
+      let keep = 1;
+      for (let yy = -1; yy <= 1; yy++) {
+        for (let xx = -1; xx <= 1; xx++) {
+          let j = (x + xx) + (y + yy) * w;
+          if (mask[j] !== 1) { keep = 0; break; }
+        }
+        if (!keep) break;
+      }
+      out[i] = keep;
+    }
+  }
+  return out;
+}
+
+function dilateMask(mask, w, h) {
+  const out = new Int8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let i = x + y * w;
+      if (mask[i] === 1) {
+        // set neighborhood
+        for (let yy = -1; yy <= 1; yy++) {
+          for (let xx = -1; xx <= 1; xx++) {
+            let nx = x + xx;
+            let ny = y + yy;
+            if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+              out[nx + ny * w] = 1;
+            }
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// Helper: convert a p5 color string into an rgba(...) CSS string for canvas shadowColor
+function shadowColorString(cssColor) {
+  try {
+    const c = color(cssColor);
+    const r = floor(red(c));
+    const g = floor(green(c));
+    const b = floor(blue(c));
+    const a = constrain(alpha(c) / 255, 0, 1);
+    return `rgba(${r},${g},${b},${a})`;
+  } catch (e) {
+    return cssColor;
+  }
 }
 
 function draw() {
@@ -322,8 +445,71 @@ function draw() {
     pop();
   }
 
-  // Show the archive (stamped outlines)
+  // Show the archive (finished stamps)
   image(archive, 0, 0);
+
+  // Render pending stamps (fade-in). When a stamp finishes fading in, bake it into the archive.
+  const now = millis();
+  for (let i = stamps.length - 1; i >= 0; i--) {
+    const s = stamps[i];
+    const t = (now - s.created) / (s.fadeDuration || settings.stampFadeDuration);
+    const a = constrain(t, 0, 1);
+
+    // Draw fill first (with alpha) using direct canvas drawImage to avoid p5 tint/transform
+    const ctx = drawingContext;
+    ctx.save();
+    ctx.globalAlpha = a;
+    if (s.mirrored) {
+      ctx.translate(s.vp.dx + s.vp.dw, s.vp.dy);
+      ctx.scale(-1, 1);
+      ctx.drawImage(s.fill.canvas, 0, 0, s.vp.dw, s.vp.dh);
+    } else {
+      ctx.drawImage(s.fill.canvas, s.vp.dx, s.vp.dy, s.vp.dw, s.vp.dh);
+    }
+    ctx.restore();
+
+    // Draw outline with shadow (soft edge). Use a CSS rgba shadow color to preserve alpha.
+    const shadowColor = shadowColorString(settings.personBorderColor);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.shadowBlur = settings.personBorderBlur;
+    ctx.shadowColor = shadowColor;
+    if (s.mirrored) {
+      ctx.translate(s.vp.dx + s.vp.dw, s.vp.dy);
+      ctx.scale(-1, 1);
+      ctx.drawImage(s.outline.canvas, 0, 0, s.vp.dw, s.vp.dh);
+    } else {
+      ctx.drawImage(s.outline.canvas, s.vp.dx, s.vp.dy, s.vp.dw, s.vp.dh);
+    }
+    ctx.restore();
+
+    // If fully faded in, bake into archive and remove from pending stamps
+    if (a >= 1) {
+      // draw permanently into archive using canvas drawImage so shadow works reliably
+      const aCtx = archive.drawingContext;
+      const shadowColor = shadowColorString(settings.personBorderColor);
+      aCtx.save();
+      aCtx.globalAlpha = 1;
+      if (s.mirrored) {
+        aCtx.translate(s.vp.dx + s.vp.dw, s.vp.dy);
+        aCtx.scale(-1, 1);
+        aCtx.drawImage(s.fill.canvas, 0, 0, s.vp.dw, s.vp.dh);
+        // outline with shadow
+        aCtx.shadowBlur = settings.personBorderBlur;
+        aCtx.shadowColor = shadowColor;
+        aCtx.drawImage(s.outline.canvas, 0, 0, s.vp.dw, s.vp.dh);
+      } else {
+        aCtx.drawImage(s.fill.canvas, s.vp.dx, s.vp.dy, s.vp.dw, s.vp.dh);
+        // outline with shadow
+        aCtx.shadowBlur = settings.personBorderBlur;
+        aCtx.shadowColor = shadowColor;
+        aCtx.drawImage(s.outline.canvas, s.vp.dx, s.vp.dy, s.vp.dw, s.vp.dh);
+      }
+      aCtx.restore();
+      // remove stamp
+      stamps.splice(i, 1);
+    }
+  }
 }
 
 function windowResized() {
