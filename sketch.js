@@ -17,19 +17,21 @@ const settings = {
   cameraOpacity: 0.24,
 
   // person / stamp appearance (used when stamping outlines)
-  personFillColor: '#6c6c6cff',
+  personFillColor: '#000000ff',
   personFillAlpha: 1.0,
-  personBorderColor: '#6c6c6cff',
+  personBorderColor: '#000000ff',
   personBorderWeight: 2,
   personBorderBlur: 16, // haziness for the border (0 = crisp)
   // Video capture / placement (for preserving aspect ratio)
-  videoCaptureWidth: 320,
-  videoCaptureHeight: 240,
-  videoFit: 'contain', // 'contain' | 'cover' | 'stretch'
+  videoCaptureWidth: 1280,
+  videoCaptureHeight: 720,
+  // default to 'cover' so the video fills the entire canvas (cropping as needed)
+  // ('cover' preserves aspect ratio and crops to fill; 'stretch' will distort)
+  videoFit: 'cover', // 'contain' | 'cover' | 'stretch'
   videoScale: 1.0,
   videoOffsetX: 0,
   videoOffsetY: 0,
-  videoMirror: true,
+  videoMirror: false,
 };
 
 function setup() {
