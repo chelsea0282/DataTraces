@@ -42,6 +42,8 @@ const settings = {
   stampFadeDuration: 5000,
   // how long (ms) to wait AFTER the stamp is created before starting the fade-in
   stampDelay: 5000,
+  // allow quickly disabling the pre-fade delay for testing
+  stampDelayEnabled: true,
   // morphological opening to remove thin attachments (shadows)
   morphologyEnabled: true,
   morphologyIterations: 1,
@@ -116,6 +118,10 @@ function keyPressed() {
   // Toggles
   if (key.toLowerCase() === 'm') settings.videoMirror = !settings.videoMirror;
   if (key.toLowerCase() === 'c') settings.showCamera = !settings.showCamera;
+  if (key.toLowerCase() === 'l') {
+    settings.stampDelayEnabled = !settings.stampDelayEnabled;
+    console.log('stampDelayEnabled', settings.stampDelayEnabled, 'stampDelay(ms)', settings.stampDelay);
+  }
 
   // Print debug
   if (key.toLowerCase() === 'd') {
@@ -347,9 +353,9 @@ function stampOutline(mask, w, h) {
     fill: fillGraphics,
     created: millis(),
     fadeDuration: settings.stampFadeDuration,
-    delay: settings.stampDelay || 0,
-    vp: vp,
-    mirrored: settings.videoMirror
+    // respect the enabled flag so tests can disable the pre-fade lag
+    delay: settings.stampDelayEnabled ? (settings.stampDelay || 0) : 0,
+    vp: vp
   };
   stamps.push(stamp);
   archive.pop();
@@ -468,7 +474,7 @@ function draw() {
     const ctx = drawingContext;
     ctx.save();
     ctx.globalAlpha = a;
-    if (s.mirrored) {
+    if (settings.videoMirror) {
       ctx.translate(s.vp.dx + s.vp.dw, s.vp.dy);
       ctx.scale(-1, 1);
       ctx.drawImage(s.fill.canvas, 0, 0, s.vp.dw, s.vp.dh);
@@ -483,7 +489,7 @@ function draw() {
     ctx.globalAlpha = a;
     ctx.shadowBlur = settings.personBorderBlur;
     ctx.shadowColor = shadowColor;
-    if (s.mirrored) {
+    if (settings.videoMirror) {
       ctx.translate(s.vp.dx + s.vp.dw, s.vp.dy);
       ctx.scale(-1, 1);
       ctx.drawImage(s.outline.canvas, 0, 0, s.vp.dw, s.vp.dh);
@@ -499,7 +505,7 @@ function draw() {
       const shadowColor = shadowColorString(settings.personBorderColor);
       aCtx.save();
       aCtx.globalAlpha = 1;
-      if (s.mirrored) {
+      if (settings.videoMirror) {
         aCtx.translate(s.vp.dx + s.vp.dw, s.vp.dy);
         aCtx.scale(-1, 1);
         aCtx.drawImage(s.fill.canvas, 0, 0, s.vp.dw, s.vp.dh);
