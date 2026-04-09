@@ -40,6 +40,8 @@ const settings = {
   videoMirror: false,
   // how long (ms) the stamp fades in after being created
   stampFadeDuration: 5000,
+  // how long (ms) to wait AFTER the stamp is created before starting the fade-in
+  stampDelay: 5000,
   // morphological opening to remove thin attachments (shadows)
   morphologyEnabled: true,
   morphologyIterations: 1,
@@ -345,6 +347,7 @@ function stampOutline(mask, w, h) {
     fill: fillGraphics,
     created: millis(),
     fadeDuration: settings.stampFadeDuration,
+    delay: settings.stampDelay || 0,
     vp: vp,
     mirrored: settings.videoMirror
   };
@@ -452,7 +455,13 @@ function draw() {
   const now = millis();
   for (let i = stamps.length - 1; i >= 0; i--) {
     const s = stamps[i];
-    const t = (now - s.created) / (s.fadeDuration || settings.stampFadeDuration);
+    // Respect an initial delay before starting the fade-in
+    const fadeStart = s.created + (s.delay || 0);
+    if (now < fadeStart) {
+      // Not yet started fading in — skip drawing this stamp for now
+      continue;
+    }
+    const t = (now - fadeStart) / (s.fadeDuration || settings.stampFadeDuration);
     const a = constrain(t, 0, 1);
 
     // Draw fill first (with alpha) using direct canvas drawImage to avoid p5 tint/transform
